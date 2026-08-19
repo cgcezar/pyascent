@@ -129,31 +129,58 @@ def _pq_run(src, checks_json):
     return json.dumps({"out": out, "err": err, "checks": results})
 `;
 
+let bootPromise = null;
+let bootFailed = false;
+
 async function boot() {
   try {
-    importScripts(CDN + "pyodide.js");
+    // Pyodide 314 dropped classic workers: pyodide.asm.mjs is an ES module, so
+    // importScripts() is no longer supported and this file must run as a
+    // module worker. See runner.js, which passes { type: "module" }.
+    const { loadPyodide } = await import(CDN + "pyodide.mjs");
     pyodide = await loadPyodide({ indexURL: CDN });
     pyodide.FS.writeFile("trails.csv", TRAILS_CSV);
     pyodide.FS.writeFile("packlist.txt", PACKLIST_TXT);
     pyodide.runPython(HARNESS);
     postMessage({ type: "ready" });
   } catch (e) {
+    bootFailed = true;
     postMessage({ type: "boot-error", message: String(e && e.message ? e.message : e) });
   }
+}
+
+// Boot is slow and onmessage is async, so a run posted during boot would
+// otherwise be handled while pyodide is still undefined. Every run waits on
+// the same boot promise instead of being turned away.
+function ensureBoot() {
+  if (!bootPromise) bootPromise = boot();
+  return bootPromise;
 }
 
 self.onmessage = async (ev) => {
   const msg = ev.data || {};
 
   if (msg.type === "boot") {
-    await boot();
+    await ensureBoot();
     return;
   }
 
   if (msg.type === "run") {
     const { id, src, checks, needsPandas } = msg;
+    await ensureBoot();
     if (!pyodide) {
-      postMessage({ type: "result", id, payload: { out: "", err: "Python is still starting up. Give it a second and run again.", checks: [] } });
+      postMessage({
+        type: "result",
+        id,
+        payload: {
+          out: "",
+          err: bootFailed
+            ? "Python could not be loaded. Check your connection and reload the page."
+            : "Python is not available. Reload the page and try again.",
+          checks: [],
+          noTraceback: true,
+        },
+      });
       return;
     }
     try {
@@ -162,6 +189,9 @@ self.onmessage = async (ev) => {
         await pyodide.loadPackage("pandas");
         pandasReady = true;
       }
+      // The clock on the main thread starts here, so booting and downloading
+      // pandas never eat into the run timeout.
+      postMessage({ type: "started", id });
       const runner = pyodide.globals.get("_pq_run");
       const raw = runner(src, JSON.stringify(checks || []));
       runner.destroy();
