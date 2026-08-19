@@ -309,7 +309,7 @@ function wireLab(wp, task, slotKey, opts) {
   const runIt = async () => {
     const btn = $("#runBtn");
     btn.disabled = true;
-    btn.textContent = "Running";
+    btn.textContent = runner.ready ? "Running" : "Starting Python";
     persist();
     const src = ed.get();
     const res = await runner.run(src, task.checks || [], { needsPandas: wp.needsPandas });
@@ -329,9 +329,18 @@ function wireLab(wp, task, slotKey, opts) {
     ).join("");
 
     const passed = !res.err && (res.checks || []).length > 0 && res.checks.every((c) => c.ok);
+
+    // Only talk about tracebacks when Python actually produced one. A timeout
+    // or a startup problem is not the user's code being wrong.
+    let failMsg;
+    if (!res.err) failMsg = "Not there yet. The failed checks above tell you what is missing.";
+    else if (res.noTraceback || !/Traceback \(most recent call last\)/.test(res.err))
+      failMsg = "The run could not finish. The message in the console explains why.";
+    else failMsg = "Python raised an error. Read the last line of the traceback first.";
+
     $("#verdictSlot").innerHTML = passed
       ? `<div class="verdict" data-kind="pass">All checks passed. ${opts.award} m of elevation gained.</div>`
-      : `<div class="verdict" data-kind="fail">${res.err ? "Python raised an error. Read the last line of the traceback first." : "Not there yet. The failed checks above tell you what is missing."}</div>`;
+      : `<div class="verdict" data-kind="fail">${failMsg}</div>`;
 
     if (passed && !opts.isDone()) {
       opts.markDone();
