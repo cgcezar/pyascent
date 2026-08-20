@@ -389,6 +389,14 @@ body{
 .opt:disabled{cursor:default}
 .opt[data-state="right"]{border-color:var(--moss);background:var(--moss-dim);color:var(--moss)}
 .opt[data-state="wrong"]{border-color:var(--flare);background:var(--flare-dim);color:var(--flare)}
+/* A ruled-out option stays readable but clearly spent, so the remaining
+   choices are the ones that draw the eye. */
+.opt[data-state="wrong"]{text-decoration:line-through;text-decoration-color:rgba(242,84,91,.55);opacity:.72}
+.q__retry{
+  margin:11px 0 0;padding:9px 13px;border-left:2px solid var(--amber);
+  background:rgba(240,180,41,.07);border-radius:0 6px 6px 0;
+  font-family:var(--font-mono);font-size:11.5px;letter-spacing:.04em;color:var(--amber);
+}
 .opt code{font-family:var(--font-mono);font-size:.9em}
 .q__why{
   margin:11px 0 0;padding:10px 13px;border-left:2px solid var(--sky);
