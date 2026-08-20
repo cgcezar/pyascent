@@ -37,11 +37,27 @@ function wpPoints(wp) {
   if (!r) return 0;
   let n = r.brief ? PTS.brief : 0;
   wp.drills.forEach((_, i) => { if (r.drills[i]) n += PTS.drill; });
-  wp.quiz.forEach((_, i) => { if (r.quiz[i] === true) n += PTS.quiz; });
+  // A question answered after a wrong guess is worth half, so retrying is
+  // forgiving without making the summit free.
+  wp.quiz.forEach((_, i) => {
+    if (r.quiz[i] !== true) return;
+    const missed = (r.quizWrong && r.quizWrong[i]) || [];
+    n += missed.length ? Math.round(PTS.quiz / 2) : PTS.quiz;
+  });
   if (r.challenge) n += PTS.challenge;
   return n;
 }
-const wpDone = (wp) => wpPoints(wp) >= wp.max;
+// Finishing and scoring are now separate. You clear a waypoint by completing
+// every part of it; the metres you keep depend on how cleanly you did it.
+function wpComplete(wp) {
+  const r = state.p[wp.id];
+  if (!r) return false;
+  return !!r.brief
+    && wp.drills.every((_, i) => !!r.drills[i])
+    && wp.quiz.every((_, i) => r.quiz[i] === true)
+    && !!r.challenge;
+}
+const wpDone = (wp) => wpComplete(wp);
 const wpStarted = (wp) => wpPoints(wp) > 0;
 const modPoints = (m) => m.waypoints.reduce((n, wp) => n + wpPoints(wp), 0);
 const modMax = (m) => m.waypoints.reduce((n, wp) => n + wp.max, 0);
@@ -373,7 +389,11 @@ function wireLab(wp, task, slotKey, opts) {
 
 function checkMilestones(wp) {
   if (modDone(wp.module)) toast(`Module ${wp.moduleIndex + 1} cleared. Badge earned.`);
-  if (totalPoints() >= TOTAL_PTS) toast(`Summit. ${SUMMIT_M} m. Every waypoint cleared.`);
+  if (doneCount() === TOTAL_WAYPOINTS) {
+    toast(totalPoints() >= TOTAL_PTS
+      ? `Summit. ${SUMMIT_M} m, clean run. Every waypoint cleared.`
+      : `Summit reached. Every waypoint cleared at ${metres(totalPoints())} m.`);
+  }
 }
 
 /* ----------------------------------------------------------------
@@ -411,7 +431,7 @@ function viewHome() {
       }).join("")}
     </div>
 
-    ${pts >= TOTAL_PTS ? `<div class="summit" style="margin-top:30px"><h2>Summit reached</h2><p>All ${TOTAL_WAYPOINTS} waypoints cleared. ${SUMMIT_M} m.</p></div>` : ""}
+    ${done === TOTAL_WAYPOINTS ? `<div class="summit" style="margin-top:30px"><h2>Summit reached</h2><p>All ${TOTAL_WAYPOINTS} waypoints cleared at ${metres(pts)} m${pts >= TOTAL_PTS ? ", a clean run." : `. A flawless route is worth ${SUMMIT_M} m, so there is a reason to come back.`}</p></div>` : ""}
   `;
 }
 
@@ -507,20 +527,24 @@ function panelTest(wp) {
     <div class="quiz">
       <h3 style="font-family:var(--font-display);font-size:20px;margin:0 0 14px">Knowledge check</h3>
       ${wp.quiz.map((q, qi) => {
-        const answered = r.quiz[qi] !== undefined;
+        // Solved means correct. Wrong picks are remembered but do not close
+        // the question, so you can try the ones you have not ruled out yet.
+        const solved = r.quiz[qi] === true;
+        const missed = (r.quizWrong && r.quizWrong[qi]) || [];
+        const award = missed.length ? Math.round(PTS.quiz / 2) : PTS.quiz;
         return `<div class="q" data-q="${qi}">
-          <div class="q__n">Question ${qi + 1} of ${wp.quiz.length} &middot; ${PTS.quiz} m</div>
+          <div class="q__n">Question ${qi + 1} of ${wp.quiz.length} &middot; ${solved ? award : PTS.quiz} m</div>
           <p class="q__text">${md(q.q)}</p>
           ${q.code ? `<pre class="q__code">${esc(q.code)}</pre>` : ""}
           ${q.options.map((o, oi) => {
             let st = "";
-            if (answered) {
-              if (oi === q.answer) st = "right";
-              else if (r.quizPick && r.quizPick[qi] === oi) st = "wrong";
-            }
-            return `<button class="opt" data-opt="${oi}" data-state="${st}" ${answered ? "disabled" : ""}>${md(o)}</button>`;
+            if (solved && oi === q.answer) st = "right";
+            else if (missed.includes(oi)) st = "wrong";
+            const lock = solved || missed.includes(oi);
+            return `<button class="opt" data-opt="${oi}" data-state="${st}" ${lock ? "disabled" : ""}>${md(o)}</button>`;
           }).join("")}
-          <div class="q__why" ${answered ? "" : 'hidden'}>${md(q.why)}</div>
+          <div class="q__retry" ${!solved && missed.length ? "" : "hidden"}>Not that one. Try again, worth ${Math.round(PTS.quiz / 2)} m now.</div>
+          <div class="q__why" ${solved ? "" : "hidden"}>${md(q.why)}</div>
         </div>`;
       }).join("")}
     </div>
@@ -532,21 +556,42 @@ function panelTest(wp) {
     const q = wp.quiz[qi];
     qEl.querySelectorAll(".opt").forEach((btn) => {
       btn.addEventListener("click", () => {
+        if (r.quiz[qi] === true) return;
         const pick = Number(btn.dataset.opt);
         const right = pick === q.answer;
-        if (!r.quizPick) r.quizPick = {};
-        r.quizPick[qi] = pick;
-        r.quiz[qi] = right;
+        if (!r.quizWrong) r.quizWrong = {};
+        if (!r.quizWrong[qi]) r.quizWrong[qi] = [];
+
+        if (!right) {
+          // Rule this option out and leave the rest live.
+          if (!r.quizWrong[qi].includes(pick)) r.quizWrong[qi].push(pick);
+          btn.dataset.state = "wrong";
+          btn.disabled = true;
+          touchStreak(); save();
+          const left = q.options.length - r.quizWrong[qi].length;
+          const retryEl = qEl.querySelector(".q__retry");
+          retryEl.hidden = false;
+          retryEl.textContent = left === 1
+            ? "Not that one. One option left."
+            : `Not that one. Try again, worth ${Math.round(PTS.quiz / 2)} m now.`;
+          toast("Not quite. Pick another one.");
+          return;
+        }
+
+        r.quiz[qi] = true;
+        const award = r.quizWrong[qi].length ? Math.round(PTS.quiz / 2) : PTS.quiz;
         touchStreak(); save();
         qEl.querySelectorAll(".opt").forEach((b, oi) => {
           b.disabled = true;
           if (oi === q.answer) b.dataset.state = "right";
-          else if (oi === pick) b.dataset.state = "wrong";
         });
+        qEl.querySelector(".q__retry").hidden = true;
+        qEl.querySelector(".q__n").textContent =
+          `Question ${qi + 1} of ${wp.quiz.length} \u00b7 ${award} m`;
         qEl.querySelector(".q__why").hidden = false;
         renderChrome();
-        toast(right ? `Correct. +${PTS.quiz} m` : "Not quite. The explanation is below.");
-        if (right) checkMilestones(wp);
+        toast(`Correct. +${award} m`);
+        checkMilestones(wp);
       });
     });
   });
